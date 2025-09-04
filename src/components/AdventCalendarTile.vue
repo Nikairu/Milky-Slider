@@ -1,28 +1,44 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, withDefaults, defineProps } from "vue";
 import CachedImg from "./CachedImg.vue";
 
-const props = defineProps<{
-  data: { id: number; title: string; image?: { id: number; url: string } };
-  eager?: boolean;
-}>();
+type LooseSlide =
+  | {
+      id?: number;
+      title?: string;
+      image?: { id?: number; url: string };
+    }
+  | null
+  | undefined;
 
-const hasImage = computed(() => {
-  const url = props.data.image?.url;
-  return typeof url === "string" && url.trim().length > 0;
+const props = withDefaults(
+  defineProps<{
+    data?: LooseSlide;
+    eager?: boolean;
+  }>(),
+  { eager: false }
+);
+
+const title = computed(() => props.data?.title ?? "");
+
+const imgSrc = computed(() => {
+  const url = props.data?.image?.url;
+  return typeof url === "string" && url.trim().length > 0 ? url : null;
 });
+
+const hasImage = computed(() => !!imgSrc.value);
 </script>
 
 <template>
   <div class="tile">
     <CachedImg
       v-if="hasImage"
-      :src="data.image!.url"
-      :alt="data.title"
-      :eager="eager ?? false"
+      :src="imgSrc!"
+      :alt="title"
+      :eager="eager"
       :style="{ pointerEvents: 'none' }"
     />
-    <div class="label">{{ data.title }}</div>
+    <div class="label">{{ title }}</div>
   </div>
 </template>
 

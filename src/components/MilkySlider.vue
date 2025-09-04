@@ -1,574 +1,389 @@
 <template>
   <div
-    ref="root"
-    class="flat-root"
+    ref="rootEl"
+    data-role="flat-carousel"
+    :class="[
+      'relative block w-full touch-pan-y overflow-hidden',
+      `before:block before:pt-[calc(var(--slot-base-w)*var(--center-scale)*var(--ar-ratio))] before:content-['']`,
+      { 'js-active': isJsModeActive },
+    ]"
+    :style="rootCssVars"
     @mousedown="onPointerDown"
     @touchstart="onPointerDown"
   >
-    <div class="flat-stage">
-      <!-- Render by logical item; stable per-item keys (with copy index when needed) -->
+    <div class="absolute inset-0 grid h-full w-full">
       <div
         v-for="vis in visibleItems"
         :key="itemKeyFor(vis)"
-        class="flat-slot"
-        :style="slotStyle(vis.rel)"
+        data-role="flat-slot"
+        :data-rel="vis.relSlot"
+        :style="slotCssVars(vis.relSlot)"
+        :class="[
+          'pointer-events-auto absolute top-0 will-change-[transform] [contain:content]',
+          'aspect-[var(--ar-w)_/_var(--ar-h)]',
+          '[width:var(--slot-base-w)]',
+          'z-[calc(1000_-_(var(--slot-abs,0)*10))]',
+          !isJsModeActive
+            ? [
+                'left-1/2',
+                '[margin-left:calc((var(--slot-base-w)*-0.5)_+_var(--x))]',
+              ]
+            : [
+                'left-0',
+                'ml-0',
+                '[transform:var(--slot-transform,translate3d(-100000px,0,0))!important]',
+              ],
+        ]"
       >
         <div
-          class="flat-inner"
-          :class="defaultClass(vis)"
-          :style="slotInnerStyle(vis.rel)"
+          data-role="flat-inner"
+          :class="[
+            'h-full w-full origin-center rounded-[12px] shadow-[0_6px_18px_rgba(0,0,0,0.12)] [contain:content]',
+            '[transform:scale(var(--scale))]',
+            '[opacity:var(--opacity)]',
+            isJsModeActive
+              ? isDragging || !!rafHandle
+                ? 'transition-none'
+                : 'transition-opacity transition-transform duration-200 ease-out'
+              : 'transition-none',
+            defaultClass(vis),
+          ]"
+          :style="innerCssVars()"
         >
           <slot
             name="slide"
             v-bind="{
-              item: items[vis.wr],
-              index: vis.wr,
-              relSlot: vis.rel,
-              isActive: Math.round(offset) === vis.abs, // TODO: REVIEW - rounding during animation may cause transient double-active state
-              scale: innerScale(vis.rel),
-              shouldLoad: shouldLoad(vis.rel),
+              item: items[vis.wrappedIndex],
+              index: vis.wrappedIndex,
+              relSlot: vis.relSlot,
+              isActive: Math.round(slideOffset) === vis.absIndex,
+              scale: isJsModeActive ? innerScale(vis.relSlot) : undefined,
+              shouldLoad: shouldLoadSticky(vis.relSlot, vis.wrappedIndex),
             }"
           >
-            {{ items[vis.wr] }}
+            {{ items[vis.wrappedIndex] }}
           </slot>
         </div>
+      </div>
+    </div>
+
+    <div
+      v-if="warmParked.length"
+      aria-hidden="true"
+      class="pointer-events-none absolute -left-[100000px] -top-[100000px] h-px w-px opacity-0"
+    >
+      <div
+        v-for="idx in warmParked"
+        :key="'warm-' + idx"
+        class="h-px w-px overflow-hidden"
+      >
+        <slot
+          name="slide"
+          v-bind="{
+            item: items[idx],
+            index: idx,
+            relSlot: 9999,
+            isActive: false,
+            scale: undefined,
+            shouldLoad: true,
+          }"
+        />
       </div>
     </div>
   </div>
 </template>
 
-<script setup lang="ts">
-/**
- * FlatCarousel (script setup)
- * Touch/mouse draggable, center-scaled, overscanned, optionally looping carousel.
- * Public API: next, prev, goTo, recalculate.
- */
-
+<script setup lang="ts" generic="T">
 import {
   ref,
   computed,
-  onMounted,
-  onBeforeUnmount,
   toRef,
   watch,
+  withDefaults,
   defineProps,
   defineEmits,
   defineExpose,
   nextTick,
+  onBeforeUnmount,
 } from "vue";
 
-/* ========================
- * Props (public configuration)
- * ======================== */
-const props = defineProps({
-  items: { type: Array, default: () => [] },
-  perView: { type: Number, default: 3 },
-  spacing: { type: Number, default: 15 },
-  centerScale: { type: Number, default: 1 },
-  sideScale: { type: Number, default: 0.7 },
-  loop: { type: Boolean, default: false },
-  modelValue: { type: Number, default: 0 },
-  snapMs: { type: Number, default: 250 },
-  itemKey: { type: Function, default: null }, // (item, absIndex) => any
-  initialWidth: { type: Number, default: 600 },
+import { useLooping } from "../composables/useLooping";
+import { useWarmCache } from "../composables/useWarmCache";
+import { useGeometryVars } from "../composables/useGeometryVars";
+import { useRenderer } from "../composables/useRenderer";
+import { useGestures } from "../composables/useGestures";
 
-  // lazy + overscan
-  lazyOffscreen: { type: Boolean, default: false },
-  preloadNeighbors: { type: Number, default: 2 },
-  overscanEachSide: { type: Number, default: 1 },
+/* ======================== Props ======================== */
+const props = withDefaults(
+  defineProps<{
+    items?: (T | null | undefined)[] | undefined;
+    perView?: number;
+    spacing?: number;
+    centerScale?: number;
+    sideScale?: number;
+    loop?: boolean;
+    modelValue?: number;
+    snapMs?: number;
+    itemKey?: ((item: T | null | undefined, absIndex: number) => any) | null;
+    lazyOffscreen?: boolean;
+    preloadNeighbors?: number;
+    overscanEachSide?: number;
+    expandOnDrag?: boolean;
+  }>(),
+  {
+    perView: 3.7,
+    spacing: 15,
+    centerScale: 1,
+    sideScale: 0.7,
+    loop: true,
+    modelValue: 0,
+    snapMs: 250,
+    itemKey: null,
+    lazyOffscreen: false,
+    preloadNeighbors: 2,
+    overscanEachSide: 20,
+    expandOnDrag: true,
+  }
+);
+const emit = defineEmits<{
+  (e: "update:modelValue", value: number): void;
+  (e: "change", value: number): void;
+}>();
 
-  // optional: grow DOM window while dragging (kept from previous iterations)
-  expandOnDrag: { type: Boolean, default: true },
-});
-
-const emit = defineEmits(["update:modelValue", "change"]);
-
-/* ========================
- * Member variables (state)
- * ======================== */
-const root = ref<HTMLElement | null>(null);
-const containerWidth = ref(0);
-const slotBaseWidth = ref(0);
-const offset = ref(props.modelValue);
-const isDragging = ref(false);
-const lastPointerX = ref(0);
-const rafId = ref<number | null>(null);
-
-/* ========================
- * Props as Refs
- * ======================== */
-const itemsRef = toRef(props, "items");
+/* ======================== State & prop refs ======================== */
+const rootEl = ref<HTMLElement | null>(null);
+const isJsModeActive = ref(false);
+const slideOffset = ref(props.modelValue!);
 const perViewRef = toRef(props, "perView");
 const spacingRef = toRef(props, "spacing");
 const centerScaleRef = toRef(props, "centerScale");
 const sideScaleRef = toRef(props, "sideScale");
 const loopRef = toRef(props, "loop");
 const snapMsRef = toRef(props, "snapMs");
+const itemsArr = computed<Readonly<(T | null | undefined)[]>>(
+  () => props.items ?? []
+);
+const items = itemsArr;
 
-/* ========================
- * Derived state (computed)
- * ======================== */
-const itemCount = computed(() => itemsRef.value.length);
-const hasItems = computed(() => itemCount.value > 0);
-
-// When looping and rendering copies because perView >= n
-const copiesActive = computed(
-  () => loopRef.value && hasItems.value && perViewRef.value >= itemCount.value
+/* ======================== Relative window ======================== */
+const rawItemCount = computed(() => itemsArr.value.length);
+const rawHasItems = computed(() => rawItemCount.value > 0);
+const rawCopiesModeActive = computed(
+  () =>
+    loopRef.value &&
+    rawHasItems.value &&
+    (perViewRef.value ?? 0) >= rawItemCount.value
 );
 
-/* ========================
- * Internal helpers (pure or side-effect free)
- * ======================== */
-const clamp = (v: number, min: number, max: number) =>
-  Math.max(min, Math.min(max, v));
-const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
-const smoothstep = (x: number) => {
-  const t = clamp(x, 0, 1);
-  return t * t * (3 - 2 * t);
-};
-const wrapIndex = (i: number) => {
-  if (!hasItems.value) return 0;
-  const m = itemCount.value;
-  return ((i % m) + m) % m;
-};
-const fracOffset = () => offset.value - Math.round(offset.value);
+const relativeWindow = computed(() => {
+  if (!rawHasItems.value) return [] as number[];
+  const pv = Math.max(1, perViewRef.value!);
+  const visibleCount = Math.ceil(pv);
+  const interactive = props.expandOnDrag;
+  const extraEachSide = Math.max(props.overscanEachSide!, interactive ? 2 : 0);
+  let count = visibleCount + 2 * extraEachSide;
 
-const nearestWrappedIndex = (currentAbs: number, targetWrapped: number) => {
-  if (!hasItems.value) return 0;
-  const m = itemCount.value;
-  const base = Math.floor(currentAbs / m) * m + targetWrapped;
-  const candidates = [base - m, base, base + m];
-  let best = candidates[0];
-  let bestDist = Math.abs(best - currentAbs);
-  for (const cand of candidates) {
-    const d = Math.abs(cand - currentAbs);
-    if (d < bestDist) {
-      best = cand;
-      bestDist = d;
-    }
-  }
-  return best;
-};
-
-/** Compute relative window of slots to render (symmetric around center). */
-const relWindow = computed(() => {
-  if (!hasItems.value) return [] as number[];
-
-  const perViewVal = Math.max(1, perViewRef.value);
-  const hasFraction = perViewVal % 1 !== 0;
-  const visibleCount = Math.max(
-    1,
-    Math.ceil(perViewVal) + (hasFraction ? 1 : 0)
-  );
-
-  const interactive = props.expandOnDrag && (isDragging.value || !!rafId.value);
-  const interactiveExtra = interactive ? 2 : 0;
-  const extraEachSide = Math.max(props.overscanEachSide, interactiveExtra);
-
-  let windowCount = visibleCount + 2 * extraEachSide;
-
-  if (copiesActive.value) {
-    const minCount = Math.ceil(perViewVal) + 2;
-    if (windowCount < minCount) windowCount = minCount;
+  if (rawCopiesModeActive.value) {
+    const min = visibleCount + 2;
+    if (count < min) count = min;
   } else if (loopRef.value) {
-    windowCount = Math.min(windowCount, itemCount.value);
+    count = Math.min(count, rawItemCount.value);
   }
 
-  const leftCount = Math.floor((windowCount - 1) / 2);
+  const leftCount = Math.floor((count - 1) / 2);
   const out: number[] = [];
   for (let k = -leftCount; k <= leftCount; k++) out.push(k);
   return out;
 });
 
-const visibleItems = computed(() => {
-  if (!hasItems.value)
-    return [] as Array<{ abs: number; wr: number; rel: number }>;
-  const centerAbs = Math.round(offset.value);
-  const out: Array<{ abs: number; wr: number; rel: number }> = [];
-  for (const rel of relWindow.value) {
+/* ======================== Looping & indices ======================== */
+const looping = useLooping(
+  loopRef,
+  perViewRef,
+  itemsArr,
+  relativeWindow,
+  props.itemKey
+);
+const itemKeyFor = (vis: { absIndex: number; wrappedIndex: number }) =>
+  looping.itemKeyFor(vis);
+const centerIndex = computed(() => Math.round(slideOffset.value));
+
+/* ======================== Visible items ======================== */
+type VisibleItem = { absIndex: number; wrappedIndex: number; relSlot: number };
+const visibleItems = computed<VisibleItem[]>(() => {
+  const out: VisibleItem[] = [];
+  if (!looping.hasItems.value) return out;
+  const centerAbs = centerIndex.value;
+  for (const rel of relativeWindow.value) {
     const abs = centerAbs + rel;
-    if (!loopRef.value && (abs < 0 || abs > itemCount.value - 1)) continue;
-    out.push({ abs, wr: wrapIndex(abs), rel });
+    if (!loopRef.value && (abs < 0 || abs > looping.itemCount.value - 1))
+      continue;
+    const wrapped = looping.wrapIndexCircular(abs);
+    out.push({ absIndex: abs, wrappedIndex: wrapped, relSlot: rel });
   }
   return out;
 });
 
-// unique key per *copy* when needed
-const copyIndex = (abs: number) =>
-  hasItems.value ? Math.floor(abs / itemCount.value) : 0;
+/* ======================== Geometry & Vars ======================== */
+const {
+  containerWidth,
+  baseSlotWidth,
+  rootCssVars,
+  innerScale: _innerScale,
+  slotCssVars,
+  innerCssVars,
+  measureGeometry,
+} = useGeometryVars(
+  rootEl,
+  perViewRef,
+  spacingRef,
+  centerScaleRef,
+  sideScaleRef,
+  looping.hasItems,
+  isJsModeActive
+);
 
-const itemKeyFor = (vis: { abs: number; wr: number }) => {
-  if (!hasItems.value) return vis.abs;
+const fractionalOffset = () =>
+  slideOffset.value - Math.round(slideOffset.value);
+const innerScale = (rel: number) => _innerScale(rel, fractionalOffset());
 
-  const obj = itemsRef.value[vis.wr];
-  if (typeof props.itemKey === "function") {
-    const base = props.itemKey(obj, vis.abs);
-    if (
-      loopRef.value &&
-      (copiesActive.value || relWindow.value.length > itemCount.value)
-    ) {
-      return `${base}@${copyIndex(vis.abs)}`;
-    }
-    return base;
-  }
+/* ======================== Warm cache / sticky load ======================== */
+const { warmParked, shouldLoadSticky } = useWarmCache(
+  perViewRef,
+  computed(() => props.preloadNeighbors ?? 0),
+  computed(() =>
+    visibleItems.value.map((v) => ({ wrappedIndex: v.wrappedIndex }))
+  ),
+  slideOffset
+);
 
-  if (loopRef.value) {
-    if (copiesActive.value || relWindow.value.length > itemCount.value) {
-      return `${vis.wr}@${copyIndex(vis.abs)}`;
-    }
-    return vis.wr;
-  }
-  return vis.abs;
-};
+/* ======================== Renderer ======================== */
+const { rebuildDomMap, renderFrame, scheduleRender } = useRenderer(
+  rootEl,
+  isJsModeActive,
+  looping.hasItems,
+  baseSlotWidth,
+  () => spacingRef.value!,
+  () => containerWidth.value,
+  fractionalOffset,
+  (rel, frac) => _innerScale(rel, frac)
+);
 
-/* ========================
- * Non-public functions (imperative internals)
- * ======================== */
-const cancelAnim = () => {
-  if (rafId.value) {
-    cancelAnimationFrame(rafId.value);
-    rafId.value = null;
-  }
-};
+/* ======================== Gestures & animation ======================== */
+const emitUpdate = (v: number) => emit("update:modelValue", v);
+const emitChange = (v: number) => emit("change", v);
 
-const animateTo = (targetIndex: number) => {
-  if (!hasItems.value) return;
-  const maxIdx = itemCount.value - 1;
-  const clampedTarget = loopRef.value
-    ? targetIndex
-    : clamp(targetIndex, 0, maxIdx);
+const {
+  isDragging,
+  rafHandle,
+  animateToIndex,
+  onPointerDown,
+  enterJsMode,
+  teardown,
+} = useGestures(
+  rootEl, // NEW: pass the root element
+  isJsModeActive,
+  looping.hasItems,
+  loopRef,
+  looping.itemCount,
+  snapMsRef,
+  slideOffset,
+  measureGeometry,
+  rebuildDomMap,
+  renderFrame,
+  scheduleRender,
+  (rel, frac) => _innerScale(rel, frac),
+  baseSlotWidth,
+  () => spacingRef.value!,
+  emitUpdate,
+  emitChange,
+  looping.wrapIndexCircular
+);
 
-  cancelAnim();
-  const start = offset.value;
-  const end = clampedTarget;
-  const t0 = performance.now();
-  const dur = snapMsRef.value;
-
-  const tick = (now: number) => {
-    const t = Math.min(1, (now - t0) / dur);
-    offset.value = start + (end - start) * easeOutCubic(t);
-    if (t < 1) {
-      rafId.value = requestAnimationFrame(tick);
+/* ======================== Watchers (flush DOM before remapping) ======================== */
+watch(
+  () => props.modelValue,
+  (v) => {
+    if (!looping.hasItems.value) {
+      slideOffset.value = 0;
       return;
     }
-    rafId.value = null;
-    const finalIdx = Math.round(offset.value);
-    const viewIdx = loopRef.value
-      ? wrapIndex(finalIdx)
-      : clamp(finalIdx, 0, maxIdx);
+    if (v == null) return;
+    if (loopRef.value) {
+      animateToIndex(
+        looping.nearestEquivalentAbsoluteIndex(
+          slideOffset.value,
+          looping.wrapIndexCircular(v)
+        )
+      );
+    } else {
+      animateToIndex(Math.max(0, Math.min(looping.itemCount.value - 1, v)));
+    }
+  }
+);
 
-    suppressModelWatch = true;
-    emit("update:modelValue", viewIdx);
-    emit("change", viewIdx);
-    queueMicrotask(() => {
-      suppressModelWatch = false;
-    });
-  };
-  rafId.value = requestAnimationFrame(tick);
+watch(centerIndex, async () => {
+  await nextTick();
+  rebuildDomMap();
+  scheduleRender();
+});
+watch(relativeWindow, async () => {
+  await nextTick();
+  rebuildDomMap();
+  scheduleRender();
+});
+
+watch([perViewRef, spacingRef, centerScaleRef, sideScaleRef], () => {
+  if (isJsModeActive.value) {
+    measureGeometry();
+    scheduleRender();
+  }
+});
+watch(looping.itemCount, () => {
+  if (!loopRef.value && looping.hasItems.value)
+    slideOffset.value = Math.max(
+      0,
+      Math.min(looping.itemCount.value - 1, Math.round(slideOffset.value))
+    );
+  if (isJsModeActive.value) {
+    measureGeometry();
+    scheduleRender();
+  }
+});
+
+/* ======================== Public API ======================== */
+const next = async () => {
+  if (!isJsModeActive.value) await enterJsMode();
+  animateToIndex(Math.round(slideOffset.value) + 1);
 };
+const prev = async () => {
+  if (!isJsModeActive.value) await enterJsMode();
+  animateToIndex(Math.round(slideOffset.value) - 1);
+};
+const goTo = async (i: number) => {
+  if (!isJsModeActive.value) await enterJsMode();
+  animateToIndex(i);
+};
+const recalculate = () => {
+  if (!isJsModeActive.value) return;
+  measureGeometry();
+  scheduleRender();
+};
+defineExpose({ next, prev, goTo, recalculate });
 
+onBeforeUnmount(() => {
+  teardown(); // NEW: clean up observers and listeners
+});
+
+/* ======================== Slot helpers ======================== */
 const numberClass = (idx: number) => {
   const k = (((idx % 6) + 6) % 6) + 1;
   return `number-slide${k}`;
 };
-const defaultClass = (vis: { abs: number; wr: number }) => {
-  if (!hasItems.value) return "";
-  const idx = loopRef.value ? vis.wr : vis.abs;
-  if (!loopRef.value && (idx < 0 || idx >= itemCount.value)) return "";
+const defaultClass = (vis: { absIndex: number; wrappedIndex: number }) => {
+  if (!looping.hasItems.value) return "";
+  const idx = loopRef.value ? vis.wrappedIndex : vis.absIndex;
+  if (!loopRef.value && (idx < 0 || idx >= looping.itemCount.value)) return "";
   return numberClass(idx);
 };
-
-// Measurement and layout
-const measure = () => {
-  const el = root.value;
-  const width = el
-    ? el.clientWidth || el.getBoundingClientRect().width || 0
-    : 0;
-  containerWidth.value = width > 0 ? width : props.initialWidth;
-
-  if (!hasItems.value) {
-    slotBaseWidth.value = 0;
-    return;
-  }
-
-  const perViewVal = Math.max(0, perViewRef.value);
-  const totalGapsPx = spacingRef.value * Math.max(0, perViewVal - 1);
-
-  const perViewInt = Math.floor(perViewVal);
-  const perViewFrac = perViewVal - perViewInt;
-
-  let scaleBudget = 0;
-  if (perViewInt >= 1)
-    scaleBudget = centerScaleRef.value + (perViewInt - 1) * sideScaleRef.value;
-  scaleBudget += perViewFrac * sideScaleRef.value;
-
-  const innerWidthPx = Math.max(0, containerWidth.value - totalGapsPx);
-  slotBaseWidth.value = scaleBudget > 0 ? innerWidthPx / scaleBudget : 0;
-};
-
-const innerScale = (relSlot: number) => {
-  const dist = Math.abs(relSlot - fracOffset());
-  const t = clamp(1 - dist, 0, 1);
-  const weight = smoothstep(t);
-  return (
-    sideScaleRef.value + (centerScaleRef.value - sideScaleRef.value) * weight
-  );
-};
-const innerWidth = (relSlot: number) =>
-  slotBaseWidth.value * innerScale(relSlot);
-const pairDistance = (i: number, j: number) =>
-  spacingRef.value + 0.5 * (innerWidth(i) + innerWidth(j));
-
-const localStep = () => {
-  const frac = fracOffset();
-  const leftIndex = frac >= 0 ? 0 : -1;
-  const rightIndex = leftIndex + 1;
-  return (
-    pairDistance(leftIndex, rightIndex) ||
-    slotBaseWidth.value + spacingRef.value
-  );
-};
-
-const slotCenterX = (relSlot: number) => {
-  const centerX = containerWidth.value / 2;
-  const frac = fracOffset();
-  const leftIndex = frac >= 0 ? 0 : -1;
-  const rightIndex = leftIndex + 1;
-  const t = frac >= 0 ? frac : 1 + frac;
-
-  const pairLen = pairDistance(leftIndex, rightIndex);
-  let leftX = -t * pairLen;
-  let rightX = (1 - t) * pairLen;
-
-  if (relSlot >= rightIndex) {
-    let x = rightX;
-    for (let j = rightIndex; j < relSlot; j++) x += pairDistance(j, j + 1);
-    return centerX + x;
-  }
-  if (relSlot <= leftIndex) {
-    let x = leftX;
-    for (let j = relSlot; j < leftIndex; j++) x -= pairDistance(j, j + 1);
-    return centerX + x;
-  }
-  return centerX + (relSlot === leftIndex ? leftX : rightX);
-};
-
-const slotStyle = (relSlot: number) => {
-  const left = slotCenterX(relSlot) - slotBaseWidth.value / 2;
-  const z = 1000 - Math.floor(100 * Math.abs(relSlot - fracOffset()));
-  return {
-    position: "relative", // changed from absolute
-    width: `${slotBaseWidth.value}px`,
-    height: `${Math.round((slotBaseWidth.value * AR_H) / AR_W)}px`,
-    transform: `translate3d(${left}px,0,0)`,
-    willChange: "transform",
-    zIndex: z,
-  } as const;
-};
-
-const slotInnerStyle = (relSlot: number) => {
-  const scale = innerScale(relSlot);
-  const dist = Math.abs(relSlot - fracOffset());
-  const t = clamp(1 - dist, 0, 1);
-  const opacity = 0.6 + 0.4 * smoothstep(t);
-  return {
-    transform: `scale(${scale})`,
-    opacity,
-    transition:
-      isDragging.value || rafId.value
-        ? "none"
-        : "transform 180ms ease, opacity 180ms ease",
-    width: "100%",
-    height: "100%",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-  } as const;
-};
-
-const shouldLoad = (relSlot: number) => {
-  if (!props.lazyOffscreen) return true;
-  const dist = Math.abs(relSlot - fracOffset());
-  const hysteresis = 0.75;
-  return dist <= 1 + Math.max(0, props.preloadNeighbors) + hysteresis;
-};
-
-/* ========================
- * Event handling (non-public)
- * ======================== */
-// ---- rubber-band fix support ----
-let suppressModelWatch = false;
-// ---------------------------------
-
-let winOnMove: any = null;
-let winOnUp: any = null;
-
-const attachWindowEvents = () => {
-  winOnMove = (ev: MouseEvent | TouchEvent) => onPointerMove(ev);
-  winOnUp = () => onPointerUp();
-
-  window.addEventListener("mousemove", winOnMove as any, { passive: false });
-  window.addEventListener("mouseup", winOnUp as any, { passive: true });
-  window.addEventListener("touchmove", winOnMove as any, { passive: false });
-  window.addEventListener("touchend", winOnUp as any, { passive: true });
-  window.addEventListener("touchcancel", winOnUp as any, { passive: true });
-};
-const detachWindowEvents = () => {
-  if (winOnMove) {
-    window.removeEventListener("mousemove", winOnMove);
-    window.removeEventListener("touchmove", winOnMove);
-    winOnMove = null;
-  }
-  if (winOnUp) {
-    window.removeEventListener("mouseup", winOnUp);
-    window.removeEventListener("touchend", winOnUp);
-    window.removeEventListener("touchcancel", winOnUp);
-    winOnUp = null;
-  }
-};
-
-const onPointerDown = (e: MouseEvent | TouchEvent) => {
-  if (!hasItems.value) return;
-  // non-left mouse button guard
-  // @ts-ignore
-  if (!("touches" in e) && e.button !== undefined && e.button !== 0) return;
-
-  cancelAnim();
-  isDragging.value = true;
-
-  // @ts-ignore
-  const startX =
-    "touches" in e ? e.touches[0].clientX : (e as MouseEvent).clientX;
-  lastPointerX.value = startX;
-
-  (document.body as any).style.userSelect = "none";
-  attachWindowEvents();
-};
-
-const onPointerMove = (e: MouseEvent | TouchEvent) => {
-  if (!isDragging.value || !hasItems.value) return;
-  if ("touches" in e) e.preventDefault();
-
-  // @ts-ignore
-  const x = "touches" in e ? e.touches[0].clientX : (e as MouseEvent).clientX;
-  const deltaX = x - lastPointerX.value;
-  const step = localStep();
-
-  let newOffset = offset.value - deltaX / step;
-  if (!loopRef.value)
-    newOffset = clamp(newOffset, 0, Math.max(0, itemCount.value - 1));
-
-  offset.value = newOffset;
-  lastPointerX.value = x;
-};
-
-const onPointerUp = () => {
-  if (!isDragging.value || !hasItems.value) return;
-  isDragging.value = false;
-  (document.body as any).style.userSelect = "";
-  detachWindowEvents();
-  animateTo(Math.round(offset.value));
-};
-
-/* ========================
- * Lifecycle
- * ======================== */
-let resizeObserver: ResizeObserver | null = null;
-
-onMounted(async () => {
-  await nextTick();
-  requestAnimationFrame(measure);
-  resizeObserver = new ResizeObserver(() => measure());
-  if (root.value) resizeObserver.observe(root.value);
-  window.addEventListener("resize", measure, { passive: true });
-});
-
-onBeforeUnmount(() => {
-  resizeObserver?.disconnect();
-  resizeObserver = null;
-  window.removeEventListener("resize", measure);
-  detachWindowEvents();
-  cancelAnim();
-});
-
-/* ========================
- * Reactivity to prop changes
- * ======================== */
-watch(
-  () => props.modelValue,
-  (v) => {
-    if (!hasItems.value) {
-      offset.value = 0;
-      return;
-    }
-    if (suppressModelWatch) return;
-
-    if (loopRef.value) {
-      const target = nearestWrappedIndex(offset.value, wrapIndex(v));
-      animateTo(target);
-    } else {
-      animateTo(clamp(v, 0, itemCount.value - 1));
-    }
-  }
-);
-watch([perViewRef, spacingRef, centerScaleRef, sideScaleRef], () => measure());
-watch(itemCount, () => {
-  if (!loopRef.value && hasItems.value) {
-    offset.value = clamp(Math.round(offset.value), 0, itemCount.value - 1);
-  }
-  measure();
-});
-
-/* ========================
- * Public API (exposed)
- * ======================== */
-/** Advance to the next slide (wraps when loop is enabled). */
-const next = () => animateTo(Math.round(offset.value) + 1);
-/** Move to the previous slide (wraps when loop is enabled). */
-const prev = () => animateTo(Math.round(offset.value) - 1);
-/** Jump to an absolute slide index (respects loop and clamping rules). */
-const goTo = (index: number) => animateTo(index);
-/** Recalculate sizes and layout, e.g., after container/responsive changes. */
-const recalculate = () => measure();
-
-defineExpose({ next, prev, goTo, recalculate });
-
-/** expose items (ref) for template */
-const items = itemsRef;
-
-/* ========================
- * Probable defects marked
- * ======================== */
-// TODO: REVIEW - Using Math.round(offset) in multiple places can cause flicker at half-way thresholds.
-// TODO: REVIEW - Window event listeners rely on passive:false for touchmove to allow preventDefault; ensure this is acceptable for your app's scroll UX.
-
-const AR_W = 11;
-const AR_H = 15;
 </script>
-
-<style scoped>
-.flat-root {
-  position: relative;
-  width: 100%;
-  overflow: hidden;
-  touch-action: pan-y;
-  display: block;
-}
-.flat-stage {
-  position: relative;
-  width: 100%;
-  min-width: 1px;
-  height: 100%;
-  display: grid; /* ensure overlapping stacking context for relative children */
-}
-.flat-slot {
-  position: relative; /* changed from absolute */
-  grid-area: 1 / 1; /* all slots overlap and are transform-positioned */
-  pointer-events: auto;
-}
-.flat-inner {
-  border-radius: 12px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
-  transform-origin: center center;
-}
-</style>
