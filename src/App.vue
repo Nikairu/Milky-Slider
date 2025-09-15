@@ -33,7 +33,7 @@ const items = ref<Slide[]>([
   },
   {
     title: "Two 1",
-    image: { url: "https://static.photos/nature/1024x576/96" },
+    image: { url: "https://cdn.wallpapersafari.com/37/5/pkPCQM.jpg" },
   },
   { title: "Four 1" },
   {
@@ -56,7 +56,9 @@ const items = ref<Slide[]>([
   { title: "Four 2" },
   {
     title: "Three 2",
-    image: { url: "https://static.photos/nature/1200x630/176" },
+    image: {
+      url: "https://images.pexels.com/photos/1624496/pexels-photo-1624496.jpeg?cs=srgb&dl=pexels-eberhardgross-1624496.jpg&fm=jpg",
+    },
   },
   { title: "Five 2" },
   { title: "Seven 2" },
@@ -69,7 +71,9 @@ const items = ref<Slide[]>([
   },
   {
     title: "Two 3",
-    image: { url: "https://static.photos/nature/1024x576/96" },
+    image: {
+      url: "https://images.pexels.com/photos/1624496/pexels-photo-1624496.jpeg?cs=srgb&dl=pexels-eberhardgross-1624496.jpg&fm=jpg",
+    },
   },
   { title: "Four 3" },
   {
