@@ -137,7 +137,7 @@ const props = withDefaults(
     sideScale: 0.7,
     loop: true,
     modelValue: 0,
-    snapMs: 250,
+    snapMs: 2000,
     itemKey: null,
     lazyOffscreen: false,
     preloadNeighbors: 2,

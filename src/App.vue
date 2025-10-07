@@ -24,7 +24,13 @@ const slider = ref<SliderApi | null>(null); // <-- get access to MilkySlider API
 const nextSlide = () => slider.value?.next();
 const prevSlide = () => slider.value?.prev();
 
-const currentIdx = ref(0);
+const currentIdx = ref(4);
+
+/* async function simulateAsyncValueUpdate() {
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  currentIdx.value = 7;
+  console.log("currentIdx updated to:", currentIdx.value);
+} */
 
 const items = ref<Slide[]>([
   {

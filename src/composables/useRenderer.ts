@@ -17,13 +17,16 @@ export function useRenderer(
     number,
     { tx: number; scale: number; opacity: number }
   >();
+
   let renderRaf: number | null = null;
 
   function rebuildDomMap() {
     domByRel.clear();
     prevFrame.clear();
+
     const root = rootEl.value;
     if (!root) return;
+
     const slots = root.querySelectorAll<HTMLElement>('[data-role="flat-slot"]');
     slots.forEach((slot) => {
       const rel = Number(slot.getAttribute("data-rel"));
@@ -32,9 +35,8 @@ export function useRenderer(
     });
   }
 
-  const EPS_TX = 0.25;
-  const EPS_SCALE = 0.002;
-  const EPS_OPA = 0.004;
+  // Keep a tiny epsilon only for translation writes; always write scale/opacity.
+  const EPS_TX = 0; // px
 
   function writeSlotVars(
     rel: number,
@@ -45,20 +47,24 @@ export function useRenderer(
     opacity: number
   ) {
     const prev = prevFrame.get(rel);
-    const needTx = !prev || Math.abs(prev.tx - tx) > EPS_TX;
-    const needScale = !prev || Math.abs(prev.scale - scale) > EPS_SCALE;
-    const needOpa = !prev || Math.abs(prev.opacity - opacity) > EPS_OPA;
 
-    if (needTx)
+    const needTx = !prev || Math.abs((prev.tx ?? 0) - tx) > EPS_TX;
+
+    // Position: write only when it actually moves enough.
+    if (needTx) {
       slot.style.setProperty(
         "--slot-transform",
         `translate3d(${tx.toFixed(2)}px,0,0)`
       );
-    if (needScale) inner.style.setProperty("--scale", scale.toFixed(4));
-    if (needOpa) inner.style.setProperty("--opacity", opacity.toFixed(4));
+    }
 
-    if (needTx || needScale || needOpa)
-      prevFrame.set(rel, { tx, scale, opacity });
+    // Scale & opacity: always write to avoid “stuck” resizing on slow drags.
+    inner.style.setProperty("--scale", scale.toFixed(4));
+    inner.style.setProperty("--opacity", opacity.toFixed(4));
+
+    // Update prev snapshot: keep prev.tx if we didn't write it this frame.
+    const nextTx = needTx ? tx : prev?.tx ?? tx;
+    prevFrame.set(rel, { tx: nextTx, scale, opacity });
   }
 
   function renderFrame() {
@@ -106,14 +112,18 @@ export function useRenderer(
     }
 
     const cx = containerWidthPx() / 2;
+
     for (const rel of rels) {
       const pair = domByRel.get(rel)!;
       const centerX = pos.get(rel) ?? 0;
       const tx = cx + centerX - baseSlotWidth.value / 2;
       const s = scaleByRel.get(rel)!;
+
+      // Smoothstep for opacity identical to innerScale’s easing shape.
       const dist = Math.abs(rel - frac);
       const t1 = Math.max(0, Math.min(1, 1 - dist));
       const opa = 0.6 + 0.4 * (t1 * t1 * (3 - 2 * t1));
+
       writeSlotVars(rel, pair.slot, pair.inner, tx, s, opa);
     }
   }
