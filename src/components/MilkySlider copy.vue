@@ -101,8 +101,6 @@ import {
   watch,
   withDefaults,
   defineProps,
-  defineEmits,
-  defineExpose,
   nextTick,
 } from "vue";
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, withDefaults, defineProps } from "vue";
+import { computed } from "vue";
 import CachedImg from "./CachedImg.vue";
 
 type LooseSlide =

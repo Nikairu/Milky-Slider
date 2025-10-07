@@ -2,7 +2,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import MilkySlider from "./components/MilkySlider.vue";
-import AdventCalendarTile from "./components/AdventCalendarTile.vue";
+import AdventCalendarTile from "./components/Tile.vue";
 // import AdventCalendarTile2 from "./components/AdventCalendarTile2.vue";
 // import data from "./assets/data.json";
 
