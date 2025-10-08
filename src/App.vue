@@ -1,4 +1,4 @@
-<!-- In App.vue -->
+<!-- src/App.vue -->
 <script setup lang="ts">
 import { ref } from "vue";
 import MilkySlider from "./components/MilkySlider.vue";
@@ -24,7 +24,7 @@ const slider = ref<SliderApi | null>(null); // <-- get access to MilkySlider API
 const nextSlide = () => slider.value?.next();
 const prevSlide = () => slider.value?.prev();
 
-const currentIdx = ref(4);
+const currentIdx = ref(0);
 
 /* async function simulateAsyncValueUpdate() {
   await new Promise((resolve) => setTimeout(resolve, 3000));
@@ -99,9 +99,9 @@ const items = ref<Slide[]>([
     ref="slider"
     v-model="currentIdx"
     :items="items"
-    :per-view="4"
+    :per-view="5"
     :loop="true"
-    :spacing="15"
+    :spacing="10"
     :lazy-offscreen="true"
     :preload-neighbors="2"
     :overscanEachSide="2"

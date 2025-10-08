@@ -1,3 +1,4 @@
+//src/composables/useRenderer.ts
 import { type Ref, type ComputedRef } from "vue";
 
 type Readable<T> = Ref<T> | ComputedRef<T>;
@@ -10,7 +11,8 @@ export function useRenderer(
   spacingPx: () => number,
   containerWidthPx: () => number,
   fractionalOffset: () => number,
-  innerScaleAt: (rel: number, frac: number) => number
+  innerScaleAt: (rel: number, frac: number) => number,
+  getPreferredDir: () => number
 ) {
   const domByRel = new Map<number, { slot: HTMLElement; inner: HTMLElement }>();
   const prevFrame = new Map<
@@ -35,8 +37,8 @@ export function useRenderer(
     });
   }
 
-  // Keep a tiny epsilon only for translation writes; always write scale/opacity.
-  const EPS_TX = 0; // px
+  const EPS_TX = 0;
+  const EPS_FRAC = 1e-4;
 
   function writeSlotVars(
     rel: number,
@@ -47,10 +49,8 @@ export function useRenderer(
     opacity: number
   ) {
     const prev = prevFrame.get(rel);
-
     const needTx = !prev || Math.abs((prev.tx ?? 0) - tx) > EPS_TX;
 
-    // Position: write only when it actually moves enough.
     if (needTx) {
       slot.style.setProperty(
         "--slot-transform",
@@ -58,11 +58,9 @@ export function useRenderer(
       );
     }
 
-    // Scale & opacity: always write to avoid “stuck” resizing on slow drags.
     inner.style.setProperty("--scale", scale.toFixed(4));
     inner.style.setProperty("--opacity", opacity.toFixed(4));
 
-    // Update prev snapshot: keep prev.tx if we didn't write it this frame.
     const nextTx = needTx ? tx : prev?.tx ?? tx;
     prevFrame.set(rel, { tx: nextTx, scale, opacity });
   }
@@ -71,17 +69,34 @@ export function useRenderer(
     if (!isJsModeActive.value || !hasItems.value || baseSlotWidth.value === 0)
       return;
 
-    // Defensive: if new nodes got mounted and map is empty, rebuild once.
     if (domByRel.size === 0) rebuildDomMap();
 
     const frac = fractionalOffset();
-    const L = frac >= 0 ? 0 : -1;
-    const R = L + 1;
-    const t = frac >= 0 ? frac : 1 + frac;
+    const dirHint = getPreferredDir ? getPreferredDir() : 0;
+
+    let L: number, R: number, t: number;
+    if (Math.abs(frac) < EPS_FRAC) {
+      if (dirHint < 0) {
+        L = -1;
+        R = 0;
+        t = 1;
+      } else {
+        L = 0;
+        R = 1;
+        t = 0;
+      }
+    } else if (frac > 0) {
+      L = 0;
+      R = 1;
+      t = frac;
+    } else {
+      L = -1;
+      R = 0;
+      t = 1 + frac;
+    }
 
     const rels = Array.from(domByRel.keys()).sort((a, b) => a - b);
 
-    // Always compute scale/width for L/R to avoid NaN if those rels aren’t in DOM yet.
     const scaleByRel = new Map<number, number>();
     const widthByRel = new Map<number, number>();
     const ensure = (rel: number) => {
@@ -119,7 +134,6 @@ export function useRenderer(
       const tx = cx + centerX - baseSlotWidth.value / 2;
       const s = scaleByRel.get(rel)!;
 
-      // Smoothstep for opacity identical to innerScale’s easing shape.
       const dist = Math.abs(rel - frac);
       const t1 = Math.max(0, Math.min(1, 1 - dist));
       const opa = 0.6 + 0.4 * (t1 * t1 * (3 - 2 * t1));

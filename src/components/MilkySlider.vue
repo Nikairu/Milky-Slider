@@ -1,3 +1,4 @@
+<!-- src/components/MilkySlider.vue -->
 <template>
   <div
     ref="rootEl"
@@ -105,6 +106,7 @@ import {
   defineExpose,
   nextTick,
   onBeforeUnmount,
+  onMounted,
 } from "vue";
 
 import { useLooping } from "../composables/useLooping";
@@ -131,13 +133,13 @@ const props = withDefaults(
     expandOnDrag?: boolean;
   }>(),
   {
-    perView: 3.7,
+    perView: 5,
     spacing: 15,
     centerScale: 1,
     sideScale: 0.7,
-    loop: true,
+    loop: false,
     modelValue: 0,
-    snapMs: 2000,
+    snapMs: 550,
     itemKey: null,
     lazyOffscreen: false,
     preloadNeighbors: 2,
@@ -258,6 +260,7 @@ const { warmParked, shouldLoadSticky } = useWarmCache(
 );
 
 /* ======================== Renderer ======================== */
+/* eslint-disable @typescript-eslint/no-use-before-define */
 const { rebuildDomMap, renderFrame, scheduleRender } = useRenderer(
   rootEl,
   isJsModeActive,
@@ -266,8 +269,10 @@ const { rebuildDomMap, renderFrame, scheduleRender } = useRenderer(
   () => spacingRef.value!,
   () => containerWidth.value,
   fractionalOffset,
-  (rel, frac) => _innerScale(rel, frac)
+  (rel, frac) => _innerScale(rel, frac),
+  () => getPreferredDir()
 );
+/* eslint-enable @typescript-eslint/no-use-before-define */
 
 /* ======================== Gestures & animation ======================== */
 const emitUpdate = (v: number) => emit("update:modelValue", v);
@@ -280,8 +285,9 @@ const {
   onPointerDown,
   enterJsMode,
   teardown,
+  getPreferredDir,
 } = useGestures(
-  rootEl, // NEW: pass the root element
+  rootEl, // pass the root element
   isJsModeActive,
   looping.hasItems,
   loopRef,
@@ -353,15 +359,17 @@ watch(looping.itemCount, () => {
 
 /* ======================== Public API ======================== */
 const next = async () => {
-  if (!isJsModeActive.value) await enterJsMode();
+  if (!isJsModeActive.value) await enterJsMode(+1);
   animateToIndex(Math.round(slideOffset.value) + 1);
 };
 const prev = async () => {
-  if (!isJsModeActive.value) await enterJsMode();
+  if (!isJsModeActive.value) await enterJsMode(-1);
   animateToIndex(Math.round(slideOffset.value) - 1);
 };
 const goTo = async (i: number) => {
-  if (!isJsModeActive.value) await enterJsMode();
+  const cur = Math.round(slideOffset.value);
+  const dir = i > cur ? +1 : i < cur ? -1 : 0;
+  if (!isJsModeActive.value) await enterJsMode(dir);
   animateToIndex(i);
 };
 const recalculate = () => {
@@ -371,8 +379,15 @@ const recalculate = () => {
 };
 defineExpose({ next, prev, goTo, recalculate });
 
+/* ======================== Lifecycle ======================== */
+onMounted(() => {
+  // Pre-enter JS mode on mount to avoid first-interaction stutter.
+  // Direction hint neutral; first user action will set it.
+  enterJsMode(0);
+});
+
 onBeforeUnmount(() => {
-  teardown(); // NEW: clean up observers and listeners
+  teardown();
 });
 
 /* ======================== Slot helpers ======================== */

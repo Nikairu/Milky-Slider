@@ -1,4 +1,4 @@
-// composables/useGeometryVars.ts
+/* src/composables/useGeometryVars.ts */
 import { ref, computed, type ComputedRef, type Ref } from "vue";
 
 export function useGeometryVars(

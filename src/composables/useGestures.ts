@@ -3,7 +3,7 @@ import { ref, type Ref, type ComputedRef } from "vue";
 type Readable<T> = Ref<T> | ComputedRef<T>;
 
 export function useGestures(
-  rootEl: Ref<HTMLElement | null>, // NEW
+  rootEl: Ref<HTMLElement | null>,
   isJsModeActive: Ref<boolean>,
   hasItems: Readable<boolean>,
   loopRef: Readable<boolean>,
@@ -24,11 +24,15 @@ export function useGestures(
   const isDragging = ref(false);
   const lastPointerX = ref(0);
   const rafHandle = ref<number | null>(null);
+  const preferredDir = ref(0);
+  const getPreferredDir = () => preferredDir.value;
 
   let resizeObserver: ResizeObserver | null = null;
   let onWindowPointerMove: any = null;
   let onWindowPointerUp: any = null;
-  let onWindowResize: any = null; // NEW
+  let onWindowResize: any = null;
+
+  const EPS_NUDGE = 1e-3;
 
   function cancelAnimation() {
     if (rafHandle.value != null) {
@@ -37,17 +41,28 @@ export function useGestures(
     }
   }
 
-  async function enterJsMode() {
+  async function enterJsMode(dirHint = 0) {
     if (isJsModeActive.value) return;
+
     isJsModeActive.value = true;
+    preferredDir.value = dirHint;
 
     measureGeometry();
-    // Ensure DOM has the JS-mode slots before first render
+
+    // Ensure DOM updated for JS-mode, then map nodes
     await Promise.resolve();
     rebuildDomMap();
+
+    // Nudge BEFORE the first render so the initial frame matches direction
+    const frac0 = slideOffset.value - Math.round(slideOffset.value);
+    if (dirHint !== 0 && Math.abs(frac0) < EPS_NUDGE) {
+      slideOffset.value = slideOffset.value + dirHint * EPS_NUDGE;
+    }
+
+    // First paint synchronously to avoid any ambiguous frame
     renderFrame();
 
-    // Observe size changes of the root element (and fall back to window resize)
+    // Observe resize
     resizeObserver = new ResizeObserver(() => {
       measureGeometry();
       scheduleRender();
@@ -56,9 +71,8 @@ export function useGestures(
     try {
       resizeObserver.observe(el);
     } catch {
-      // no-op
+      /* no-op */
     }
-
     onWindowResize = () => {
       measureGeometry();
       scheduleRender();
@@ -66,7 +80,6 @@ export function useGestures(
     window.addEventListener("resize", onWindowResize as any, { passive: true });
   }
 
-  // Distance in px between two “center” neighbors given current frac
   function localStepDistancePx() {
     const frac = slideOffset.value - Math.round(slideOffset.value);
     const L = frac >= 0 ? 0 : -1;
@@ -79,12 +92,14 @@ export function useGestures(
   function attachWindowEvents() {
     onWindowPointerMove = (ev: MouseEvent | TouchEvent) => onPointerMove(ev);
     onWindowPointerUp = () => onPointerUp();
+
     window.addEventListener("mousemove", onWindowPointerMove as any, {
       passive: false,
     });
     window.addEventListener("mouseup", onWindowPointerUp as any, {
       passive: true,
     });
+
     window.addEventListener("touchmove", onWindowPointerMove as any, {
       passive: false,
     });
@@ -95,6 +110,7 @@ export function useGestures(
       passive: true,
     });
   }
+
   function detachWindowEvents() {
     if (onWindowPointerMove) {
       window.removeEventListener("mousemove", onWindowPointerMove);
@@ -112,15 +128,14 @@ export function useGestures(
   function clamp(v: number, min: number, max: number) {
     return Math.max(min, Math.min(max, v));
   }
+
   function easeOutCubic(t: number) {
     return 1 - Math.pow(1 - t, 3);
   }
 
-  // >>> Patched: prime the first frame with a tiny offset in the target direction
   function animateToIndex(target: number) {
     if (!hasItems.value) return;
 
-    // CSS-only path when JS mode is off
     if (!isJsModeActive.value) {
       const max = itemCount.value - 1;
       const end = loopRef.value ? target : clamp(target, 0, max);
@@ -141,15 +156,18 @@ export function useGestures(
     const start = slideOffset.value;
     const dir = end > start ? 1 : end < start ? -1 : 0;
 
-    // If starting exactly on an integer, push a minimal fractional offset
-    // toward the target so the very first render uses the correct anchor.
-    if (dir !== 0) {
-      const eps = 1e-3;
-      const frac = slideOffset.value - Math.round(slideOffset.value);
-      if (Math.abs(frac) < eps) {
-        slideOffset.value = start + dir * eps;
-        scheduleRender();
-      }
+    // Make direction available to the very first paint
+    preferredDir.value = dir;
+
+    const frac = slideOffset.value - Math.round(slideOffset.value);
+
+    // If we're exactly on an integer, bias a tiny amount toward the intended direction
+    if (dir !== 0 && Math.abs(frac) < EPS_NUDGE) {
+      slideOffset.value = start + dir * EPS_NUDGE;
+
+      // IMPORTANT FIX: paint synchronously so the first frame already matches `dir`
+      // This avoids a one-frame flash in the opposite direction.
+      renderFrame();
     }
 
     const t0 = performance.now();
@@ -164,12 +182,14 @@ export function useGestures(
         rafHandle.value = requestAnimationFrame(tick);
         return;
       }
+
       rafHandle.value = null;
 
       const finalIdx = Math.round(slideOffset.value);
       const view = loopRef.value
         ? wrapIndexCircular(finalIdx)
         : clamp(finalIdx, 0, max);
+
       emitUpdate(view);
       emitChange(view);
     };
@@ -179,18 +199,20 @@ export function useGestures(
 
   async function onPointerDown(e: MouseEvent | TouchEvent) {
     if (!hasItems.value) return;
-    // Only left button on mouse
     // @ts-ignore
     if (!("touches" in e) && e.button !== undefined && e.button !== 0) return;
 
-    await enterJsMode();
+    await enterJsMode(0);
+
     cancelAnimation();
     isDragging.value = true;
+    preferredDir.value = 0;
 
     // @ts-ignore
     const startX =
       "touches" in e ? e.touches[0].clientX : (e as MouseEvent).clientX;
     lastPointerX.value = startX;
+
     (document.body as any).style.userSelect = "none";
     attachWindowEvents();
   }
@@ -204,25 +226,35 @@ export function useGestures(
     const delta = x - lastPointerX.value;
     const step = localStepDistancePx();
 
+    const dir = delta < 0 ? -1 : delta > 0 ? 1 : 0;
+    if (dir !== 0) {
+      preferredDir.value = dir;
+      const frac0 = slideOffset.value - Math.round(slideOffset.value);
+      if (Math.abs(frac0) < EPS_NUDGE) {
+        slideOffset.value = slideOffset.value + dir * EPS_NUDGE;
+      }
+    }
+
     let nextOffset = slideOffset.value - delta / step;
     if (!loopRef.value)
       nextOffset = clamp(nextOffset, 0, Math.max(0, itemCount.value - 1));
-
     slideOffset.value = nextOffset;
+
     lastPointerX.value = x;
     scheduleRender();
   }
 
   function onPointerUp() {
     if (!isDragging.value || !hasItems.value) return;
+
     isDragging.value = false;
     (document.body as any).style.userSelect = "";
+
     detachWindowEvents();
     animateToIndex(Math.round(slideOffset.value));
   }
 
   function teardown() {
-    // NEW: clean up observers and listeners
     if (resizeObserver) {
       try {
         resizeObserver.disconnect();
@@ -246,6 +278,7 @@ export function useGestures(
     onPointerMove,
     onPointerUp,
     cancelAnimation,
-    teardown, // NEW
+    teardown,
+    getPreferredDir,
   };
 }
